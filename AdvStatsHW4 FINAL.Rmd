@@ -1,0 +1,338 @@
+
+
+```{r}
+# Load the necessary libraries
+library(glmnet)
+library(readr)
+library(caret)
+
+cars_data <- read_csv("Cars_Data.csv")
+
+colnames(cars_data)
+```
+
+### Partition training and test data sets
+
+```{r}
+# Set the seed for reproducibility
+set.seed(1234)
+
+# Determine the number of rows in the dataset
+n <- nrow(cars_data)
+
+# Specify the proportion of the data to be used for training
+train_proportion <- 0.8
+m <- round(train_proportion * n)
+
+# Randomly sample indices for the training data
+train_indices <- sample(1:n, m)
+
+# Convert 'Brands' column to factor and then to integer
+cars_data$Brands <- as.integer(as.factor(cars_data$Brands))
+
+# Partition the data into training and test sets
+# Exclude 'Overall Preference' column from predictors
+predictor_columns <- setdiff(names(cars_data), "Overall Preference")
+x.train <- cars_data[train_indices, predictor_columns]
+x.test <- cars_data[-train_indices, predictor_columns]
+
+cars_data$"Overall Preference" <- as.numeric(cars_data$"Overall Preference")
+
+# Set 'Overall Preference' as the response variable and convert it to a numeric vector
+y.train <- as.numeric(cars_data[train_indices, "Overall Preference", drop = TRUE])
+y.test <- as.numeric(cars_data[-train_indices, "Overall Preference", drop = TRUE])
+
+```
+
+```{r}
+
+```
+
+### LASSO Regression
+```{r}
+# Fit Lasso model
+out.lasso <- glmnet(x.train, y.train, alpha = 1)  # fits lasso because alpha = 1 vanishes the quadratic penalty
+
+# Coefficients plots
+plot(out.lasso, xvar="lambda", label = TRUE)  # plots estimates vs log(lambda) values
+
+# Extract LASSO estimates for specific lambda values
+est_1 <-  coef(out.lasso, s = 0.01)  # estimates at lambda = 0.01
+est_2 <-  coef(out.lasso, s = 0.5)   # estimates when lambda = 0.5
+
+x.train.matrix <- as.matrix(x.train)
+x.test.matrix <- as.matrix(x.test)
+
+# Now, when using cv.glmnet, ensure to use the matrix-formatted predictors
+cv.lasso <- cv.glmnet(x.train.matrix, y.train, type.measure = "mse", nfolds = 10)
+
+plot(cv.lasso, main = "Select Best Lambda")
+
+# Best lambda value and coefficients extraction
+lam_est <- cv.lasso$lambda.min
+lasso_est <- coef(out.lasso, s = lam_est)
+
+# Prediction Using Test Sample Data
+yhat <- as.vector(predict(cv.lasso, s = lam_est, newx = x.test.matrix))
+
+# Now proceed with your error calculations
+sse.test <- sum((y.test - yhat)^2)  # Ensure y.test is a numeric vector
+sst.test <- sum((y.test - mean(y.test))^2)
+rsq.test <- 1 - sse.test/sst.test
+
+# Print the R-squared value to see the performance
+print(rsq.test)
+```
+
+### Top 3 Attributes from LASSO Regression
+```{r}
+
+coefficients <- as.matrix(coef(out.lasso, s = lam_est))
+nonzero_coefficients <- coefficients[coefficients != 0, , drop = FALSE]  # Keeping as matrix
+variable_names <- row.names(nonzero_coefficients)
+
+# Combine the variable names and their coefficients into a data frame
+coefficients_df <- data.frame(
+  Variable = variable_names[-1],  # Exclude the intercept
+  Coefficient = as.numeric(nonzero_coefficients[-1])  # Convert to numeric and exclude the intercept
+)
+library(dplyr)
+# Sorting the coefficients by their absolute values to identify the top 3 attributes
+top_attributes <- coefficients_df %>%
+  dplyr::mutate(AbsCoefficient = abs(Coefficient)) %>%
+  dplyr::arrange(desc(AbsCoefficient)) %>%
+  dplyr::slice(1:3)  # Select the top 3 attributes
+
+# Print the top 3 attributes
+print(top_attributes)
+```
+
+### Ridge Regression
+```{r}
+# Convert x.train and x.test to matrix format before fitting the model
+x.train.matrix <- as.matrix(x.train)
+x.test.matrix <- as.matrix(x.test)
+
+# Fit Ridge model (since alpha = 0)
+out.ridge <- glmnet(x.train.matrix, y.train, alpha = 0)
+
+# Coefficients plots
+plot(out.ridge, xvar = "lambda", label = TRUE)
+title("Ridge Coefficients Plot", line = 2.5)
+
+# Extract Ridge estimates for specific lambda values
+est_1 <- coef(out.ridge, s = 0.01)
+est_2 <- coef(out.ridge, s = 0.5)
+
+# Optimal Lambda value
+cv.ridge <- cv.glmnet(x.train.matrix, y.train, type.measure = "mse", nfolds = 10, alpha = 0)
+plot(cv.ridge, main = "Select Best Lambda")
+ridge_lam_est <- cv.ridge$lambda.min
+
+# Prediction Using Test Sample Data
+yhat <- predict(cv.ridge, s = ridge_lam_est, newx = x.test.matrix)
+# Convert predictions to a numeric vector if necessary
+yhat <- as.vector(yhat)
+
+# Calculate SSE, SST, and R-squared
+sse.test <- sum((y.test - yhat)^2)
+sst.test <- sum((y.test - mean(y.test))^2)
+rsq.test <- 1 - sse.test/sst.test
+
+# Print the R-squared value
+print(rsq.test)
+```
+
+### Top 3 Attributes from Ridge Regression
+```{r}
+# Extract the coefficients at the best lambda value from Ridge regression
+ridge_coefficients <- coef(out.ridge, s = ridge_lam_est)
+
+# Convert to a numeric vector (excluding the intercept)
+ridge_coefficients_numeric <- as.numeric(ridge_coefficients[-1,])
+
+# Get the names of the variables (excluding the intercept)
+variable_names <- rownames(ridge_coefficients)[-1]
+
+# Create a data frame of variable names and their corresponding coefficients
+ridge_coefficients_df <- data.frame(
+  Variable = variable_names,
+  Coefficient = ridge_coefficients_numeric
+)
+
+# Calculate the absolute values of the coefficients for ranking
+ridge_coefficients_df$AbsCoefficient <- abs(ridge_coefficients_df$Coefficient)
+
+# Order the dataframe by the absolute value of coefficients to find the most significant variables
+top_ridge_attributes <- ridge_coefficients_df %>%
+  dplyr::arrange(desc(AbsCoefficient)) %>%
+  head(3)  # Select the top 3 attributes
+
+# Print the top 3 attributes
+print(top_ridge_attributes)
+```
+
+### Inference in Ridge Regression with p > n (Elastic-Net)
+```{r}
+
+library(glmnet)
+
+# Convert predictors to matrix format as required by glmnet
+x.train.matrix <- as.matrix(x.train)
+x.test.matrix <- as.matrix(x.test)
+
+# Sequence of alpha values to explore
+alpha_seq <- seq(0.1, 0.9, by = 0.1)
+
+# Initialize a vector to store MSE for each alpha
+mse_at_min_lambda <- numeric(length(alpha_seq))
+
+# Loop over alpha values
+for(i in seq_along(alpha_seq)) {
+  alpha_val <- alpha_seq[i]
+  
+  # Fit model with cv.glmnet
+  cv_fit <- cv.glmnet(x.train.matrix, y.train, alpha = alpha_val, type.measure = "mse", nfolds = 10)
+  
+  # Store MSE at lambda.min for the current alpha
+  mse_at_min_lambda[i] <- cv_fit$cvm[cv_fit$lambda == cv_fit$lambda.min]
+}
+
+# Determine the alpha with minimum MSE
+best_alpha_idx <- which.min(mse_at_min_lambda)
+best_alpha <- alpha_seq[best_alpha_idx]
+best_mse <- mse_at_min_lambda[best_alpha_idx]
+
+# Print the best alpha value and its corresponding MSE
+cat("Best alpha:", best_alpha, "\nMinimum MSE:", best_mse, "\n")
+
+# Refit the cv.glmnet model with the best alpha to plot correctly
+cv_fit_best_alpha <- cv.glmnet(x.train.matrix, y.train, alpha = best_alpha, type.measure = "mse", nfolds = 10)
+
+sse.test <- sum((y.test - yhat)^2)
+sst.test <- sum((y.test - mean(y.test))^2)
+rsq.test <- 1 - sse.test/sst.test
+
+# Print the R-squared value
+print(rsq.test)
+
+# 1. Coefficients Plots for the best alpha
+plot(cv_fit_best_alpha, xvar = "lambda", label = TRUE, main = paste("Coefficient Paths (Alpha =", best_alpha, ")"))
+
+# 2. MSE vs Lambda Plot for the best alpha
+plot(cv_fit_best_alpha, main = "MSE vs. Lambda for Best Alpha")
+
+```
+
+### Top 3 Attributes from Elastic-Net Regression
+```{r}
+# Extract the coefficients at the best lambda value from the Elastic Net model
+elastic_net_coefficients <- coef(elastic_net_model, s = lambda_best)
+
+elastic_net_coefficients_numeric <- as.numeric(elastic_net_coefficients[-1, ])
+
+# Get the names of the variables (excluding the intercept)
+variable_names <- rownames(elastic_net_coefficients)[-1]
+
+# Create a data frame of variable names and their corresponding coefficients
+elastic_net_coefficients_df <- data.frame(
+  Variable = variable_names,
+  Coefficient = elastic_net_coefficients_numeric
+)
+
+# Calculate the absolute values of the coefficients for ranking
+elastic_net_coefficients_df$AbsCoefficient <- abs(elastic_net_coefficients_df$Coefficient)
+
+# Order the dataframe by the absolute value of coefficients to find the most significant variables
+top_elastic_net_attributes <- elastic_net_coefficients_df %>%
+  dplyr::arrange(desc(AbsCoefficient)) %>%
+  head(3)  # Select the top 3 attributes
+
+# Print the top 3 attributes
+print(top_elastic_net_attributes)
+```
+
+### Present the parameter estimates from Ridge, Best-alpha EN, Lasso -- all at their respective best lambdas.
+```{r}
+# Extract coefficients at best lambdas for each model
+ridge_coeffs <- as.numeric(coef(out.ridge, s = cv.ridge$lambda.min)[-1])
+lasso_coeffs <- as.numeric(coef(out.lasso, s = cv.lasso$lambda.min)[-1])
+elastic_net_coeffs <- as.numeric(coef(elastic_net_model, s = cv.out$lambda.min)[-1])
+
+# Combine coefficients into a data frame
+coeffs_df <- data.frame(Ridge = ridge_coeffs, ElasticNet = elastic_net_coeffs, Lasso = lasso_coeffs)
+rownames(coeffs_df) <- rownames(coef(out.ridge, s = cv.ridge$lambda.min))[-1]  # Assuming same predictors across models
+
+# Display the coefficients table
+print(coeffs_df)
+```
+###5. Compute the extent of bias in percentage using the estimated parameters from the three methods for Top 3 attributes relative to the corresponding OLS estimates via lm (using the same variables from point 4). Which regression estimates should you use?
+
+```{r}
+data_for_ols <- data.frame(x.train.matrix)
+
+# Add the response variable to the data frame. Ensure the name is correctly specified without spaces or use backticks
+data_for_ols$`Overall Preference` <- y.train
+
+# Now, fit the OLS model. Make sure to use backticks around variable names with spaces or special characters
+ols_model <- lm(`Overall Preference` ~ ., data = data_for_ols)
+ols_model
+```
+
+```{r}
+library(dplyr)
+
+# OLS coefficients
+ols_coeffs_df <- data.frame(
+  Variable = c("Brands", "Attractive", "Quiet", "Unreliable", "Poorly.Built", "Interesting"),
+  Coefficient = c(0.02355, 4.81594, 0.72938, -5.27976, 6.56677, -0.06162)
+)
+
+# Ridge and Elastic Net 
+ridge_coeffs_df <- data.frame(
+  Variable = c("Brands", "Attractive", "Quiet", "Unreliable", "Poorly.Built", "Interesting"),
+  Coefficient = c(0.005615403, 0.094244022, 0.065107199, -0.058764758, -0.062245089, -0.097156183)
+)
+
+elastic_net_coeffs_df <- data.frame(
+  Variable = c("Brands", "Attractive", "Quiet", "Unreliable", "Poorly.Built", "Interesting"),
+  Coefficient = c(0, 0.225091739, 0.219123467, 0, -0.036789360, -0.252936021)
+)
+
+# Lasso coefficients 
+lasso_coeffs_df <- data.frame(
+  Variable = c("Poor.Value", "Quiet", "Common"),
+  Coefficient = c(-0.9456522, 0.4993052, -0.4732921)
+)
+
+
+coefficients_combined_df <- data.frame(
+  Variable = ols_coeffs_df$Variable,
+  OLS = ols_coeffs_df$Coefficient,
+  Ridge = ridge_coeffs_df$Coefficient,
+  ElasticNet = elastic_net_coeffs_df$Coefficient
+)
+
+coefficients_combined_df <- coefficients_combined_df %>%
+  mutate(Lasso = ifelse(Variable %in% lasso_coeffs_df$Variable, 
+                        lasso_coeffs_df$Coefficient[match(Variable, lasso_coeffs_df$Variable)], 
+                        0))
+
+coefficients_combined_df <- coefficients_combined_df %>%
+  rowwise() %>%
+  mutate(
+    Ridge_Bias = (Ridge - OLS) / OLS * 100,
+    ElasticNet_Bias = (ElasticNet - OLS) / OLS * 100,
+    Lasso_Bias = (Lasso - OLS) / OLS * 100
+  )
+
+# Select the top 3 attributes based on the absolute value of OLS coefficients
+top_attributes <- coefficients_combined_df %>%
+  arrange(desc(abs(OLS))) %>%
+  slice(1:3)
+
+top_attributes
+
+
+
+```
